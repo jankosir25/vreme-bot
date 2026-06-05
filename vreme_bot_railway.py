@@ -176,7 +176,7 @@ Pravila: brez dolgih uvodov, konkretne številke, ne piši "možno" ko je nad 70
     print("Analiziram z AI...")
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KLJUC)
     odgovor = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-6",
         max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
