@@ -212,8 +212,8 @@ Viri: ARSO · Open-Meteo (ECMWF) · wttr.in · Analiza: Claude AI · 24/7 via Ra
     msg.attach(MIMEText(analiza, "plain", "utf-8"))
     msg.attach(MIMEText(html,    "html",  "utf-8"))
 
-  with smtplib.SMTP("smtp.gmail.com", 587) as s:
-    s.starttls()
+    with smtplib.SMTP("smtp.gmail.com", 587) as s:
+        s.starttls()
         s.login(EMAIL_POSILJATELJ, EMAIL_GESLO)
         s.sendmail(EMAIL_POSILJATELJ, EMAIL_PREJEMNIK, msg.as_string())
     print("✅ Email poslan!")
