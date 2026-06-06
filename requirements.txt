@@ -2,3 +2,4 @@ requests
 anthropic
 beautifulsoup4
 schedule
+sendgrid
