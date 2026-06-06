@@ -194,30 +194,26 @@ def pošlji_email(analiza):
     html_analiza = html_analiza.replace("\n", "<br>")
 
     html = f"""<html><body style="font-family:Georgia,serif;max-width:620px;
-margin:0 auto;padding:24px;color:#222;background:#fafafa;">
+margin:0 auto;padding:24px;color:#222;">
 <h2 style="color:#1a5276;border-bottom:2px solid #1a5276;padding-bottom:8px;">
 🌤️ Vremenska napoved — {dan}, {danes.day}. {MESECI_SLO[danes.month]} {danes.year}
 </h2>
-<div style="line-height:1.8;font-size:15px;background:white;padding:20px;
-border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.08);">
+<div style="line-height:1.8;font-size:15px;">
 {html_analiza}
 </div>
 <p style="color:#aaa;font-size:11px;margin-top:20px;">
-Viri: ARSO · Open-Meteo (ECMWF) · wttr.in · Analiza: Claude AI · 24/7 via Railway.app
+Viri: ARSO · Open-Meteo · wttr.in · Claude AI · Railway.app
 </p>
 </body></html>"""
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = zadeva
-    msg["From"]    = EMAIL_POSILJATELJ
-    msg["To"]      = EMAIL_PREJEMNIK
-    msg.attach(MIMEText(analiza, "plain", "utf-8"))
-    msg.attach(MIMEText(html,    "html",  "utf-8"))
-
-    with smtplib.SMTP("smtp.gmail.com", 587) as s:
-        s.starttls()
-        s.login(EMAIL_POSILJATELJ, EMAIL_GESLO)
-        s.sendmail(EMAIL_POSILJATELJ, EMAIL_PREJEMNIK, msg.as_string())
+    sg = sendgrid.SendGridAPIClient(api_key=os.environ.get("SENDGRID_API_KEY"))
+    message = Mail(
+        from_email=EMAIL_POSILJATELJ,
+        to_emails=EMAIL_PREJEMNIK,
+        subject=zadeva,
+        html_content=html
+    )
+    sg.send(message)
     print("✅ Email poslan!")
 
 
