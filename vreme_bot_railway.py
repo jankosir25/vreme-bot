@@ -11,6 +11,8 @@ Na Railway nastavljaš spremenljivke pod:
 
 import requests
 import anthropic
+import sendgrid
+from sendgrid.helpers.mail import Mail
 import smtplib
 import json
 import os
