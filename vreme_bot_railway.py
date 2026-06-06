@@ -1,19 +1,18 @@
 """
 Vremenski AI Bot — Railway.app verzija (24/7)
 =============================================
-Enako kot vreme_bot.py, ampak prilagojen za Railway oblak.
-Razlika: podatki so v okolijskih spremenljivkah (Environment Variables),
-ne v kodi — tako so varni in jih ni treba vpisovati v datoteko.
+- Pon–Pet: podrobna napoved za Novo Mesto, kratka za Ribnico
+- Sob–Ned: podrobna napoved za Ribnico, kratka za Novo Mesto
+- Priporočila za oblačila
+- Pošilja vsak dan ob nastavljenem času
 
-Na Railway nastavljaš spremenljivke pod:
-  Project → Service → Variables
+Environment Variables na Railway:
+  ANTHROPIC_API_KEY, EMAIL_SENDER, EMAIL_PASSWORD (SendGrid),
+  EMAIL_RECIPIENT, SENDGRID_API_KEY, SEND_TIME (npr. 06:30)
 """
 
 import requests
 import anthropic
-import sendgrid
-from sendgrid.helpers.mail import Mail
-import smtplib
 import json
 import os
 import xml.etree.ElementTree as ET
@@ -22,14 +21,16 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import re
 import time
-import schedule   # pip install schedule
+import schedule
+import sendgrid
+from sendgrid.helpers.mail import Mail
 
-# ── Podatki iz Railway Environment Variables ──────────────
+# ── Environment Variables ─────────────────────────────────
 ANTHROPIC_API_KLJUC = os.environ.get("ANTHROPIC_API_KEY", "")
 EMAIL_POSILJATELJ   = os.environ.get("EMAIL_SENDER", "")
-EMAIL_GESLO         = os.environ.get("EMAIL_PASSWORD", "")
 EMAIL_PREJEMNIK     = os.environ.get("EMAIL_RECIPIENT", "")
-CAS_POSILJANJA      = os.environ.get("SEND_TIME", "06:30")   # format HH:MM
+SENDGRID_API_KLJUC  = os.environ.get("SENDGRID_API_KEY", "")
+CAS_POSILJANJA      = os.environ.get("SEND_TIME", "06:30")
 
 # ─────────────────────────────────────────────────────────
 
@@ -55,6 +56,20 @@ WMO_OPISI = {
 HEADERS = {"User-Agent": "VremeBot/1.0"}
 
 
+def je_vikend():
+    """Vrne True če je danes sobota ali nedelja."""
+    return datetime.now().weekday() >= 5
+
+
+def primarna_lokacija():
+    """Vrne ime primarne lokacije glede na dan v tednu."""
+    return "Ribnica" if je_vikend() else "Novo Mesto"
+
+
+def sekundarna_lokacija():
+    return "Novo Mesto" if je_vikend() else "Ribnica"
+
+
 def pridobi_arso(ime, arso_id):
     rezultat = {"vir": "ARSO", "lokacija": ime}
     try:
@@ -66,9 +81,11 @@ def pridobi_arso(ime, arso_id):
             el = root.find(f".//{tag}")
             return el.text.strip() if el is not None and el.text else None
         rezultat["trenutno"] = {
-            "temperatura_C": v("t"), "vlaga_%": v("rh"),
+            "temperatura_C": v("t"),
+            "vlaga_%": v("rh"),
             "padavine_mm": v("tp_1h") or v("tp"),
-            "veter_kmh": v("ff_val"), "opis": v("wwsyn_shortText") or v("nn_shortText"),
+            "veter_kmh": v("ff_val"),
+            "opis": v("wwsyn_shortText") or v("nn_shortText"),
         }
     except Exception as e:
         rezultat["napaka"] = str(e)
@@ -79,34 +96,64 @@ def pridobi_open_meteo(ime, lat, lon):
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat, "longitude": lon,
-        "daily": ["temperature_2m_max","temperature_2m_min","precipitation_sum",
-                  "precipitation_probability_max","windspeed_10m_max","weathercode"],
-        "timezone": "Europe/Belgrade", "forecast_days": 5,
+        "daily": [
+            "temperature_2m_max", "temperature_2m_min",
+            "precipitation_sum", "precipitation_probability_max",
+            "windspeed_10m_max", "weathercode",
+        ],
+        "hourly": [
+            "temperature_2m", "precipitation_probability",
+            "weathercode", "apparent_temperature",
+        ],
+        "timezone": "Europe/Belgrade",
+        "forecast_days": 5,
     }
     try:
         r = requests.get(url, params=params, timeout=10, headers=HEADERS)
-        d = r.json().get("daily", {})
+        data = r.json()
+        d = data.get("daily", {})
+        h = data.get("hourly", {})
+
+        # Izvleci urne podatke za danes (prvih 24 ur)
+        urni = []
+        for i in range(24):
+            if i < len(h.get("time", [])):
+                urni.append({
+                    "ura": h["time"][i][11:16] if h.get("time") else "",
+                    "temp": h.get("temperature_2m", [])[i] if i < len(h.get("temperature_2m", [])) else None,
+                    "obcutena": h.get("apparent_temperature", [])[i] if i < len(h.get("apparent_temperature", [])) else None,
+                    "dez_%": h.get("precipitation_probability", [])[i] if i < len(h.get("precipitation_probability", [])) else None,
+                    "stanje": WMO_OPISI.get(h.get("weathercode", [])[i] if i < len(h.get("weathercode", [])) else 0, "?"),
+                })
+
         return {
             "vir": "Open-Meteo (ECMWF)", "lokacija": ime,
             "danes": {
-                "max_C": d.get("temperature_2m_max",[None])[0],
-                "min_C": d.get("temperature_2m_min",[None])[0],
-                "padavine_mm": d.get("precipitation_sum",[None])[0],
-                "verjetnost_%": d.get("precipitation_probability_max",[None])[0],
-                "veter_kmh": d.get("windspeed_10m_max",[None])[0],
-                "stanje": WMO_OPISI.get(d.get("weathercode",[0])[0],"neznano"),
+                "max_C": d.get("temperature_2m_max", [None])[0],
+                "min_C": d.get("temperature_2m_min", [None])[0],
+                "padavine_mm": d.get("precipitation_sum", [None])[0],
+                "verjetnost_%": d.get("precipitation_probability_max", [None])[0],
+                "veter_kmh": d.get("windspeed_10m_max", [None])[0],
+                "stanje": WMO_OPISI.get(d.get("weathercode", [0])[0], "neznano"),
             },
             "jutri": {
-                "max_C": d.get("temperature_2m_max",[None,None])[1],
-                "min_C": d.get("temperature_2m_min",[None,None])[1],
-                "stanje": WMO_OPISI.get((d.get("weathercode",[0,0])or[0,0])[1],"neznano"),
+                "max_C": d.get("temperature_2m_max", [None, None])[1],
+                "min_C": d.get("temperature_2m_min", [None, None])[1],
+                "padavine_mm": d.get("precipitation_sum", [None, None])[1],
+                "verjetnost_%": d.get("precipitation_probability_max", [None, None])[1],
+                "stanje": WMO_OPISI.get((d.get("weathercode", [0, 0]) or [0, 0])[1], "neznano"),
             },
             "obeti": [
-                {"datum": d.get("time",[])[i],
-                 "max_C": d.get("temperature_2m_max",[])[i] if i<len(d.get("temperature_2m_max",[])) else None,
-                 "stanje": WMO_OPISI.get(d.get("weathercode",[])[i] if i<len(d.get("weathercode",[])) else 0,"?")}
-                for i in range(2, min(5, len(d.get("time",[]))))
-            ]
+                {
+                    "datum": d.get("time", [])[i],
+                    "max_C": d.get("temperature_2m_max", [])[i] if i < len(d.get("temperature_2m_max", [])) else None,
+                    "min_C": d.get("temperature_2m_min", [])[i] if i < len(d.get("temperature_2m_min", [])) else None,
+                    "stanje": WMO_OPISI.get(d.get("weathercode", [])[i] if i < len(d.get("weathercode", [])) else 0, "?"),
+                    "padavine_mm": d.get("precipitation_sum", [])[i] if i < len(d.get("precipitation_sum", [])) else None,
+                }
+                for i in range(2, min(5, len(d.get("time", []))))
+            ],
+            "urni_danes": urni,
         }
     except Exception as e:
         return {"vir": "Open-Meteo", "lokacija": ime, "napaka": str(e)}
@@ -121,7 +168,8 @@ def pridobi_wttr(ime, lat, lon):
         return {
             "vir": "wttr.in", "lokacija": ime,
             "danes": {
-                "max_C": danes["maxtempC"], "min_C": danes["mintempC"],
+                "max_C": danes["maxtempC"],
+                "min_C": danes["mintempC"],
                 "opis": danes["hourly"][4]["weatherDesc"][0]["value"],
                 "padavine_mm": danes["hourly"][4]["precipMM"],
             }
@@ -145,41 +193,63 @@ def zberi_napovedi():
 
 def analiziraj_z_ai(napovedi):
     danes = datetime.now()
-    datum_str = f"{DNEVI_SLO[danes.weekday()]}, {danes.day}. {MESECI_SLO[danes.month]} {danes.year}"
+    dan_ime = DNEVI_SLO[danes.weekday()]
+    datum_str = f"{dan_ime}, {danes.day}. {MESECI_SLO[danes.month]} {danes.year}"
+    vikend = je_vikend()
+    primarna = primarna_lokacija()
+    sekundarna = sekundarna_lokacija()
+
     podatki_json = json.dumps(napovedi, ensure_ascii=False, indent=2)
 
     prompt = f"""Danes je {datum_str}.
 
-Imaš vremenske podatke iz TREH virov (ARSO, Open-Meteo/ECMWF, wttr.in) za Novo Mesto in Ribnico.
+Uporabnik je dijak ki {'je doma v Ribnici (vikend)' if vikend else 'je v Novem Mestu (šolski teden)'}.
+Primarna lokacija danes: {primarna}
+Sekundarna lokacija: {sekundarna}
+
+Imaš podatke iz ARSO, Open-Meteo (ECMWF) in wttr.in za obe lokaciji.
 
 PODATKI:
-{podatki_json[:4000]}
+{podatki_json[:4500]}
 
-Napiši vremensko poročilo v slovenščini kot izkušen meteorolog prijatelju.
+Napiši vremensko poročilo v slovenščini. Ton: prijazen, direkten, kot da pišeš sošolcu.
 
-Struktura:
-**☀️ Danes — Novo Mesto**
-(3-4 stavki: jutro → poldne → popoldne. Konkretno: temperature, % verjetnost dežja, kdaj.)
+OBVEZNA STRUKTURA:
 
-**🌿 Danes — Ribnica**
-(2 stavka — razlike od NM. Ribnica je kotlina: hladnejša, bolj meglena.)
+**{'🏡' if vikend else '🏫'} Danes — {primarna}** ← GLAVNA NAPOVED
+(4-5 stavkov: jutro → dopoldne → popoldne → zvečer. Konkretne temperature, % dežja, kdaj točno.)
 
-**📅 Jutri**
-(1-2 stavka za obe lokaciji)
+**👕 Kaj obleči danes**
+Priporoči konkretno:
+- Zgornji del: kratka majica / majica z dolgimi rokavi / tanek pulover / debel pulover / jakna
+- Spodnji del: kratke hlače / dolge hlače / (po potrebi tudi kaj bolj vodoodpornega)
+- Obutev: lahki čevlji / normalni čevlji / vodoodporni čevlji / škornji
+- Dodatki: dežnik DA/NE, kaj drugega če relevantno
+Utemelji v 1 stavku zakaj.
 
-**🔭 Obeti 3-5 dni**
-(2-3 stavki)
+**📍 {sekundarna} danes**
+(1-2 stavka — samo ključne razlike. Če je podobno, povej "podobno kot {primarna}".)
+
+**📅 Jutri — {primarna}**
+(2 stavka: kaj pričakovati, ali se vreme spreminja)
+
+**🔭 Obeti do konca tedna**
+(2-3 stavki za {primarna})
 
 **🎯 Zanesljivost**
 (1 stavek: strinjanje virov. ARSO ima prednost.)
 
-Pravila: brez dolgih uvodov, konkretne številke, ne piši "možno" ko je nad 70%."""
+Pravila:
+- Ne piši "možno" ko je verjetnost nad 70%
+- Brez dolgih uvodov ali zaključkov
+- Oblačila: bodi konkreten, ne "morda pulover" ampak "pulover bo dovolj" ali "jakna nujna"
+- Ribnica: vedno omeni da je kotlina in pogosto 2-3°C hladnejša ter bolj meglena"""
 
     print("Analiziram z AI...")
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KLJUC)
     odgovor = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=1000,
+        max_tokens=1200,
         messages=[{"role": "user", "content": prompt}]
     )
     return odgovor.content[0].text
@@ -188,25 +258,31 @@ Pravila: brez dolgih uvodov, konkretne številke, ne piši "možno" ko je nad 70
 def pošlji_email(analiza):
     danes = datetime.now()
     dan   = DNEVI_SLO[danes.weekday()].capitalize()
-    zadeva = f"🌤️ Vreme {dan}, {danes.day}. {MESECI_SLO[danes.month]} — NM & Ribnica"
+    primarna = primarna_lokacija()
+    ikona = "🏡" if je_vikend() else "🏫"
+    zadeva = f"🌤️ Vreme {dan}, {danes.day}. {MESECI_SLO[danes.month]} — {ikona} {primarna}"
 
     html_analiza = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', analiza)
     html_analiza = html_analiza.replace("\n", "<br>")
 
     html = f"""<html><body style="font-family:Georgia,serif;max-width:620px;
-margin:0 auto;padding:24px;color:#222;">
-<h2 style="color:#1a5276;border-bottom:2px solid #1a5276;padding-bottom:8px;">
+margin:0 auto;padding:24px;color:#222;background:#fafafa;">
+<h2 style="color:#1a5276;border-bottom:2px solid #1a5276;padding-bottom:8px;font-size:18px;">
 🌤️ Vremenska napoved — {dan}, {danes.day}. {MESECI_SLO[danes.month]} {danes.year}
 </h2>
-<div style="line-height:1.8;font-size:15px;">
+<div style="background:#e8f4fd;padding:10px 16px;border-radius:6px;margin-bottom:16px;font-size:14px;color:#1a5276;">
+{ikona} Danes si v: <strong>{primarna}</strong>
+</div>
+<div style="line-height:1.9;font-size:15px;background:white;padding:20px;
+border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.08);">
 {html_analiza}
 </div>
 <p style="color:#aaa;font-size:11px;margin-top:20px;">
-Viri: ARSO · Open-Meteo · wttr.in · Claude AI · Railway.app
+Viri: ARSO · Open-Meteo (ECMWF) · wttr.in · Analiza: Claude AI · 24/7 via Railway.app
 </p>
 </body></html>"""
 
-    sg = sendgrid.SendGridAPIClient(api_key=os.environ.get("SENDGRID_API_KEY"))
+    sg = sendgrid.SendGridAPIClient(api_key=SENDGRID_API_KLJUC)
     message = Mail(
         from_email=EMAIL_POSILJATELJ,
         to_emails=EMAIL_PREJEMNIK,
@@ -218,15 +294,16 @@ Viri: ARSO · Open-Meteo · wttr.in · Claude AI · Railway.app
 
 
 def dnevna_naloga():
-    print(f"\n{'='*50}")
+    print(f"\n{'='*55}")
     print(f"  Vremenski Bot — {datetime.now().strftime('%d.%m.%Y %H:%M')}")
-    print(f"{'='*50}")
+    print(f"  Primarna lokacija danes: {primarna_lokacija()}")
+    print(f"{'='*55}")
     try:
         napovedi = zberi_napovedi()
         analiza  = analiziraj_z_ai(napovedi)
-        print("\n--- ANALIZA ---")
+        print("\n--- ANALIZA (prvih 300 znakov) ---")
         print(analiza[:300] + "...")
-        print("---------------")
+        print("-----------------------------------")
         pošlji_email(analiza)
         print("Končano! 🎉")
     except Exception as e:
@@ -235,21 +312,21 @@ def dnevna_naloga():
 
 def main():
     if not ANTHROPIC_API_KLJUC:
-        print("❌ Manjka ANTHROPIC_API_KEY v Environment Variables!"); return
+        print("❌ Manjka ANTHROPIC_API_KEY!"); return
+    if not SENDGRID_API_KLJUC:
+        print("❌ Manjka SENDGRID_API_KEY!"); return
     if not EMAIL_POSILJATELJ:
-        print("❌ Manjka EMAIL_SENDER v Environment Variables!"); return
+        print("❌ Manjka EMAIL_SENDER!"); return
 
     print(f"🌤️ Vremenski Bot zagnan (Railway 24/7)")
     print(f"   Pošilja vsak dan ob {CAS_POSILJANJA}")
+    print(f"   Pon–Pet → Novo Mesto | Sob–Ned → Ribnica")
 
-    # Nastavi urnik
     schedule.every().day.at(CAS_POSILJANJA).do(dnevna_naloga)
 
-    # Pošlji takoj ob zagonu (za test)
     print("\nTestni email ob zagonu...")
     dnevna_naloga()
 
-    # Teči v neskončnost
     while True:
         schedule.run_pending()
         time.sleep(60)
