@@ -30,7 +30,7 @@ ANTHROPIC_API_KLJUC = os.environ.get("ANTHROPIC_API_KEY", "")
 EMAIL_POSILJATELJ   = os.environ.get("EMAIL_SENDER", "")
 EMAIL_PREJEMNIK     = os.environ.get("EMAIL_RECIPIENT", "")
 SENDGRID_API_KLJUC  = os.environ.get("SENDGRID_API_KEY", "")
-CAS_POSILJANJA      = os.environ.get("SEND_TIME", "06:30")
+CAS_POSILJANJA      = os.environ.get("SEND_TIME", "04:30")
 
 # ─────────────────────────────────────────────────────────
 
